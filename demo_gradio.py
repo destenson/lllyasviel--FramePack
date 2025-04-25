@@ -100,7 +100,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps):
+def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost=3.0):
     total_latent_sections = (total_second_length * generation_fps) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
 
@@ -270,6 +270,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 clean_latent_2x_indices=clean_latent_2x_indices,
                 clean_latents_4x=clean_latents_4x,
                 clean_latent_4x_indices=clean_latent_4x_indices,
+                consistency_boost=consistency_boost,
                 callback=callback,
             )
 
@@ -325,7 +326,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     return
 
 
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps):
+def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -333,7 +334,7 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps)
+    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost)
 
     output_filename = None
 
@@ -401,6 +402,8 @@ with block:
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
                 
                 motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=10.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
+                
+                consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=10.0, value=3.0, step=0.1, info='Higher values create more significant changes from the beginning of the sequence. Values of 3-5 give more consistent variation throughout the video.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 

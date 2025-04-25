@@ -10,6 +10,19 @@ def flux_time_shift(t, mu=1.15, sigma=1.0):
     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
 
+def flux_time_shift_enhanced(t, mu=1.15, sigma=1.0, boost_factor=1.0):
+    """Enhanced version of flux_time_shift that allows boosting the variation throughout the schedule"""
+    shifted = math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+    # Apply a boost that affects early steps more than later steps
+    # This makes changes more significant from the beginning
+    if boost_factor > 1.0:
+        # Non-linear transformation that preserves the endpoints (0 and 1)
+        # but increases values in between, especially near the beginning
+        enhanced = shifted * (1.0 + (boost_factor - 1.0) * (1.0 - shifted))
+        return enhanced
+    return shifted
+
+
 def calculate_flux_mu(context_length, x1=256, y1=0.5, x2=4096, y2=1.15, exp_max=7.0):
     k = (y2 - y1) / (x2 - x1)
     b = y1 - k * x1
@@ -22,6 +35,14 @@ def get_flux_sigmas_from_mu(n, mu):
     sigmas = torch.linspace(1, 0, steps=n + 1)
     sigmas = flux_time_shift(sigmas, mu=mu)
     return sigmas
+
+
+def get_enhanced_flux_sigmas(n, mu, boost_factor=2.0):
+    """Get enhanced sigmas with boosted variation throughout the schedule"""
+    sigmas = torch.linspace(1, 0, steps=n + 1)
+    # Apply the enhanced flux time shift to each sigma value
+    enhanced_sigmas = torch.tensor([flux_time_shift_enhanced(t.item(), mu=mu, boost_factor=boost_factor) for t in sigmas])
+    return enhanced_sigmas.to(sigmas.device)
 
 
 @torch.inference_mode()
@@ -51,6 +72,7 @@ def sample_hunyuan(
         device=None,
         negative_kwargs=None,
         callback=None,
+        consistency_boost=1.0,  # New parameter to control early variation
         **kwargs,
 ):
     device = device or transformer.device
@@ -68,7 +90,11 @@ def sample_hunyuan(
     else:
         mu = math.log(shift)
 
-    sigmas = get_flux_sigmas_from_mu(num_inference_steps, mu).to(device)
+    # Use enhanced sigmas if consistency_boost > 1.0, otherwise use standard method
+    if consistency_boost > 1.0:
+        sigmas = get_enhanced_flux_sigmas(num_inference_steps, mu, boost_factor=consistency_boost).to(device)
+    else:
+        sigmas = get_flux_sigmas_from_mu(num_inference_steps, mu).to(device)
 
     k_model = fm_wrapper(transformer)
 
