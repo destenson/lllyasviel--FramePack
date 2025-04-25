@@ -100,7 +100,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
+def worker(input_image, additional_frames_list, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
     total_latent_sections = (total_second_length * generation_fps) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
 
@@ -154,6 +154,49 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             load_model_as_complete(vae, target_device=gpu)
 
         start_latent = vae_encode(input_image_pt, vae)
+
+        # Process additional frames if provided and enabled
+        additional_latents = []
+        if use_additional_frames and additional_frames_list and len(additional_frames_list) > 0:
+            stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Processing additional frames ...'))))
+            
+            for i, frame_data in enumerate(additional_frames_list):
+                try:
+                    # Gallery component returns a tuple (image_path, image_object)
+                    # or the frame might be directly provided as an image
+                    if isinstance(frame_data, tuple) and len(frame_data) == 2:
+                        # Extract the actual image from the tuple
+                        frame = frame_data[1]  # Second element should be the image
+                    else:
+                        frame = frame_data
+                    
+                    # Convert PIL image to numpy array if needed
+                    if isinstance(frame, Image.Image):
+                        frame_np = np.array(frame)
+                    else:
+                        frame_np = frame
+                    
+                    # Now process the frame if it's valid
+                    if frame_np is not None and len(frame_np.shape) == 3 and frame_np.shape[2] == 3:
+                        # Resize to match the same dimensions as the main image
+                        frame_resized = resize_and_center_crop(frame_np, target_width=width, target_height=height)
+                        
+                        # Convert to tensor
+                        frame_pt = torch.from_numpy(frame_resized).float() / 127.5 - 1
+                        frame_pt = frame_pt.permute(2, 0, 1)[None, :, None]
+                        
+                        # Encode with VAE to get latent
+                        frame_latent = vae_encode(frame_pt, vae)
+                        additional_latents.append(frame_latent)
+                        
+                        # Save processed frame for debugging
+                        Image.fromarray(frame_resized).save(os.path.join(outputs_folder, f'{job_id}_frame_{i}.png'))
+                    else:
+                        print(f"Skipping frame {i}: invalid format")
+                except Exception as e:
+                    print(f"Error processing frame {i}: {str(e)}")
+            
+            print(f"Processed {len(additional_latents)} additional frames")
 
         # CLIP Vision
 
@@ -212,6 +255,18 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             clean_latents_pre = start_latent.to(history_latents)
             clean_latents_post, clean_latents_2x, clean_latents_4x = history_latents[:, :, :1 + 2 + 16, :, :].split([1, 2, 16], dim=2)
             clean_latents = torch.cat([clean_latents_pre, clean_latents_post], dim=2)
+
+            # Incorporate additional latents if available
+            if use_additional_frames and additional_latents and len(additional_latents) > 0:
+                # For each iteration, update clean_latents_4x with any available additional latents
+                # This ensures the model has guidance from the additional frames
+                max_additional = min(16, len(additional_latents))  # Maximum 16 latents can be used as 4x guides
+                
+                for i in range(max_additional):
+                    # Replace the 4x guide latents with our additional frames
+                    # Make sure we're only replacing up to the available positions in clean_latents_4x
+                    idx = min(i, clean_latents_4x.shape[2] - 1)
+                    clean_latents_4x[:, :, idx, :, :] = additional_latents[i].to(clean_latents_4x.device)
 
             if not high_vram:
                 unload_complete_models()
@@ -326,7 +381,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     return
 
 
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
+def process(input_image, additional_frames_list, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -334,7 +389,7 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost)
+    async_run(worker, input_image, additional_frames_list, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost)
 
     output_filename = None
 
@@ -373,7 +428,10 @@ with block:
     gr.Markdown('# FramePack')
     with gr.Row():
         with gr.Column():
-            input_image = gr.Image(sources='upload', type="numpy", label="Image", height=320)
+            input_image = gr.Image(sources='upload', type="numpy", label="First Frame (Required)", height=320)
+            additional_frames = gr.Gallery(label="Additional Frames (Optional)", elem_id="additional_frames", visible=True, columns=4, rows=1, height=150)
+            upload_button = gr.UploadButton("Upload Additional Frames", file_types=["image"], file_count="multiple")
+            
             prompt = gr.Textbox(label="Prompt", value='')
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
@@ -381,8 +439,10 @@ with block:
             with gr.Row():
                 start_button = gr.Button(value="Start Generation")
                 end_button = gr.Button(value="End Generation", interactive=False)
+                clear_frames_button = gr.Button(value="Clear Additional Frames")
 
             with gr.Group():
+                use_additional_frames = gr.Checkbox(label='Use Additional Frames as Latent Guides', value=True, info='When enabled, additional frames are used to guide latent generation.')
                 use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
 
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
@@ -418,9 +478,30 @@ with block:
 
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
-    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost]
+    ips = [input_image, additional_frames, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
+
+    def upload_additional_frames(files):
+        image_paths = []
+        image_objects = []
+        
+        for file in files:
+            if file is not None:
+                img = Image.open(file.name)
+                image_objects.append(img)
+                image_paths.append(file.name)
+        
+        return image_objects
+
+    def clear_additional_frames():
+        return None
+    
+    # Connect the upload and clear buttons to their respective functions
+    upload_button.upload(fn=upload_additional_frames, inputs=[upload_button], outputs=[additional_frames])
+    clear_frames_button.click(fn=clear_additional_frames, inputs=[], outputs=[additional_frames])
+
+
 
 block.launch(
     server_name=args.server,
