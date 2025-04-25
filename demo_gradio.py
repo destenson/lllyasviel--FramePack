@@ -194,11 +194,11 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
 
         for latent_padding in latent_paddings:
-            # Check for end signal at the beginning of each loop iteration
-            if stream.input_queue.top() == 'end':
-                print("Ending generation early due to user request")
-                stream.output_queue.push(('end', None))
-                return
+            # # Check for end signal at the beginning of each loop iteration
+            # if stream.input_queue.top() == 'end':
+            #     print("Ending generation early due to user request")
+            #     stream.output_queue.push(('end', None))
+            #     return
 
             is_last_section = latent_padding == 0
             latent_padding_size = latent_padding * latent_window_size
@@ -388,22 +388,22 @@ with block:
                 n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
                 seed = gr.Number(label="Seed", value=31337, precision=0)
 
-                total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=3, step=0.1)
+                total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=3, step=0.25)
 
-                fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=15, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
+                fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=30, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
                 
                 generation_fps = gr.Slider(label="Generation FPS", minimum=15, maximum=60, value=30, step=1, info="Internal framerate used for generation. This affects how many frames are created. Keep at 30 for normal motion speed.")
 
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True, info="Lower values may produce more varied motion but can reduce coherence.")
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=16, step=1, info="Changing this value is not recommended. (was 25)")
+                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=6, step=1, visible=True, info="Lower values may produce more varied motion but can reduce coherence.")
+                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=18, step=1, info="Changing this value is not recommended. (was 25)")
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
-                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Try reducing this to 6-8 for more variation and less adherence to the prompt. Higher values = stricter prompt following.')
+                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Try reducing this to 6-8 for more variation and less adherence to the prompt. Higher values = stricter prompt following.')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
                 
-                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=10.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
+                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=6.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
                 
-                consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=10.0, value=3.0, step=0.1, info='Higher values create more significant changes from the beginning of the sequence. Values of 3-5 give more consistent variation throughout the video.')
+                consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=2.0, value=1.0, step=0.01, info='Higher values create more significant changes from the beginning of the sequence. Values of 3-5 give more consistent variation throughout the video.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
