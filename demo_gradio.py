@@ -473,12 +473,25 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 if overlap_latent_frames > 0:
                     print(f"Blending {overlap_latent_frames} latent frames for smooth transition")
 
+                    # Move everything to GPU for faster processing
+                    # Get the device of generated_latents (which should be GPU)
+                    target_device = generated_latents.device
+                    print(f"Using device {target_device} for blending")
+
                     # Get the overlapping frames from both tensors
                     new_overlap = generated_latents[:, :, -overlap_latent_frames:].clone()
-                    old_overlap = history_latents[:, :, :overlap_latent_frames].clone()
 
-                    # Create blending weights
-                    weights = torch.linspace(0, 1, overlap_latent_frames, dtype=history_latents.dtype, device=history_latents.device)
+                    # Move history_latents to the same device as generated_latents if needed
+                    if history_latents.device != target_device:
+                        print(f"Moving history_latents from {history_latents.device} to {target_device}")
+                        old_overlap = history_latents[:, :, :overlap_latent_frames].clone().to(target_device)
+                    else:
+                        old_overlap = history_latents[:, :, :overlap_latent_frames].clone()
+
+                    print(f"New overlap device: {new_overlap.device}, Old overlap device: {old_overlap.device}")
+
+                    # Create blending weights on the same device
+                    weights = torch.linspace(0, 1, overlap_latent_frames, dtype=generated_latents.dtype, device=target_device)
                     weights = weights.view(1, 1, -1, 1, 1)
 
                     # Blend the overlapping frames
@@ -487,8 +500,23 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                     # Replace the first few frames of history_latents with the blended frames
                     history_latents[:, :, :overlap_latent_frames] = blended_overlap
 
+                    print(f"Successfully blended {overlap_latent_frames} frames")
+
             # Concatenate the new latents with the history
-            history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
+            # If we did blending, we need to move history_latents to the same device as generated_latents
+            if section_index > 0 and overlap_latent_frames > 0:
+                # Move history_latents to the same device as generated_latents if needed
+                if history_latents.device != generated_latents.device:
+                    print(f"Moving history_latents from {history_latents.device} to {generated_latents.device} for concatenation")
+                    history_latents = history_latents.to(generated_latents.device)
+
+                # Now both tensors are on the same device, we can concatenate them
+                history_latents = torch.cat([generated_latents, history_latents], dim=2)
+            else:
+                # For the first section, just concatenate directly
+                # Move generated_latents to the same device as history_latents if needed
+                history_latents = torch.cat([generated_latents.to(history_latents.device), history_latents], dim=2)
+
             print(f"Updated history latents shape: {history_latents.shape}")
             print(f"Total generated latent frames: {total_generated_latent_frames}")
 
@@ -500,8 +528,15 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
 
             if history_pixels is None:
                 # First section - just decode all frames
-                history_pixels = vae_decode(real_history_latents, vae).cpu()
-                print(f"Initial history_pixels shape: {history_pixels.shape}")
+                # Keep on GPU if possible for faster processing
+                history_pixels = vae_decode(real_history_latents, vae)
+
+                # Only move to CPU if we're in low VRAM mode
+                if not high_vram and history_pixels.device.type != 'cpu':
+                    print(f"Moving initial history_pixels to CPU to save memory")
+                    history_pixels = history_pixels.cpu()
+
+                print(f"Initial history_pixels shape: {history_pixels.shape}, device: {history_pixels.device}")
             else:
                 # For subsequent sections, we need to handle the overlap carefully
                 # Calculate how many frames to decode from the current section
@@ -511,26 +546,53 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 # Calculate the overlap between sections
                 # This is the number of frames that will be blended between sections
                 # Using a larger overlap creates smoother transitions
-                overlapped_frames = min(latent_window_size * 4 - 3, section_latent_frames)
-                print(f"Overlap frames: {overlapped_frames}")
+                # We'll use a consistent approach with the latent blending
+                # but with a larger overlap for smoother pixel-space transitions
+                overlapped_frames = min(latent_window_size * 2, section_latent_frames)
+                print(f"Pixel-space overlap frames: {overlapped_frames}")
 
                 # Decode the current section frames
-                current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
-                print(f"Current pixels shape: {current_pixels.shape}")
+                # Keep on GPU if possible for faster processing
+                current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae)
+
+                # Only move to CPU at the end if needed for saving
+                if current_pixels.device.type != 'cpu':
+                    print(f"Keeping current_pixels on {current_pixels.device} for faster processing")
+
+                    # If history_pixels is on CPU, move it to GPU for faster blending
+                    if history_pixels.device.type == 'cpu':
+                        print(f"Moving history_pixels to {current_pixels.device} for faster blending")
+                        history_pixels = history_pixels.to(current_pixels.device)
+
+                print(f"Current pixels shape: {current_pixels.shape}, device: {current_pixels.device}")
+                print(f"History pixels shape: {history_pixels.shape}, device: {history_pixels.device}")
 
                 # Use soft_append_bcthw to blend the sections together
                 # This creates a smooth linear transition between sections
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
-                print(f"Updated history_pixels shape after append: {history_pixels.shape}")
+                print(f"Updated history_pixels shape after append: {history_pixels.shape}, device: {history_pixels.device}")
+
+                # Move to CPU only at the very end before saving to disk
+                if history_pixels.device.type != 'cpu' and not high_vram:
+                    print(f"Moving history_pixels to CPU to save memory")
+                    history_pixels = history_pixels.cpu()
 
             if not high_vram:
                 unload_complete_models()
 
             output_filename = os.path.join(outputs_folder, f'{job_id}_{total_generated_latent_frames}.mp4')
 
-            save_bcthw_as_mp4(history_pixels, output_filename, fps=fps, crf=mp4_crf)
+            # Make sure history_pixels is on CPU before saving
+            if history_pixels.device.type != 'cpu':
+                print(f"Moving history_pixels from {history_pixels.device} to CPU for saving")
+                history_pixels_cpu = history_pixels.cpu()
+            else:
+                history_pixels_cpu = history_pixels
 
-            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}')
+            # Save the video
+            save_bcthw_as_mp4(history_pixels_cpu, output_filename, fps=fps, crf=mp4_crf)
+
+            print(f'Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}, device: {history_pixels.device}')
 
             stream.output_queue.push(('file', output_filename))
 
