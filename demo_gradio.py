@@ -17,7 +17,7 @@ from PIL import Image
 from diffusers import AutoencoderKLHunyuanVideo
 from transformers import LlamaModel, CLIPTextModel, LlamaTokenizerFast, CLIPTokenizer
 from diffusers_helper.hunyuan import encode_prompt_conds, vae_decode, vae_encode, vae_decode_fake
-from diffusers_helper.utils import save_bcthw_as_mp4, crop_or_pad_yield_mask, soft_append_bcthw, resize_and_center_crop, state_dict_weighted_merge, state_dict_offset_merge, generate_timestamp
+from diffusers_helper.utils import save_bcthw_as_mp4, crop_or_pad_yield_mask, resize_and_center_crop, state_dict_weighted_merge, state_dict_offset_merge, generate_timestamp
 from diffusers_helper.models.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked
 from diffusers_helper.pipelines.k_diffusion_hunyuan import sample_hunyuan
 from diffusers_helper.memory import cpu, gpu, get_cuda_free_memory_gb, move_model_to_device_with_memory_preservation, offload_model_from_device_for_memory_preservation, fake_diffusers_current_device, DynamicSwapInstaller, unload_complete_models, load_model_as_complete
@@ -468,7 +468,10 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
             if section_index > 0:
                 # Create a smooth transition between the new latents and the existing history
                 # This helps reduce the "stochastic fading" effect between sections
-                overlap_latent_frames = min(4, new_frames)  # Use a small overlap for latent blending
+
+                # Use a larger overlap for better continuity between sections
+                # The larger the overlap, the smoother the transition will be
+                overlap_latent_frames = min(latent_window_size, new_frames)  # Use up to a full latent window for blending
 
                 if overlap_latent_frames > 0:
                     print(f"Blending {overlap_latent_frames} latent frames for smooth transition")
@@ -479,8 +482,10 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                     print(f"Using device {target_device} for blending")
 
                     # Get the overlapping frames from both tensors
+                    # For the new section, we want the LAST frames (which will be placed at the beginning of the history)
                     new_overlap = generated_latents[:, :, -overlap_latent_frames:].clone()
 
+                    # For the old section (history), we want the FIRST frames
                     # Move history_latents to the same device as generated_latents if needed
                     if history_latents.device != target_device:
                         print(f"Moving history_latents from {history_latents.device} to {target_device}")
@@ -491,16 +496,29 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                     print(f"New overlap device: {new_overlap.device}, Old overlap device: {old_overlap.device}")
 
                     # Create blending weights on the same device
-                    weights = torch.linspace(0, 1, overlap_latent_frames, dtype=generated_latents.dtype, device=target_device)
+                    # Use a smoother transition curve (cubic or sigmoid) instead of linear
+                    # This creates a more natural transition between sections
+                    t = torch.linspace(0, 1, overlap_latent_frames, dtype=generated_latents.dtype, device=target_device)
+
+                    # Apply a smooth sigmoid curve: 1 / (1 + exp(-k * (t - 0.5)))
+                    # This creates an S-shaped curve that transitions more gradually
+                    k = 6.0  # Controls the steepness of the sigmoid
+                    weights = 1.0 / (1.0 + torch.exp(-k * (t - 0.5)))
+
+                    # Reshape for broadcasting
                     weights = weights.view(1, 1, -1, 1, 1)
 
+                    print(f"Using sigmoid blending with k={k} for smoother transitions")
+
                     # Blend the overlapping frames
+                    # new_overlap will have more influence at the end of the overlap region
+                    # old_overlap will have more influence at the beginning of the overlap region
                     blended_overlap = weights * new_overlap + (1 - weights) * old_overlap
 
                     # Replace the first few frames of history_latents with the blended frames
                     history_latents[:, :, :overlap_latent_frames] = blended_overlap
 
-                    print(f"Successfully blended {overlap_latent_frames} frames")
+                    print(f"Successfully blended {overlap_latent_frames} frames with sigmoid weighting")
 
             # Concatenate the new latents with the history
             # If we did blending, we need to move history_latents to the same device as generated_latents
@@ -546,10 +564,10 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 # Calculate the overlap between sections
                 # This is the number of frames that will be blended between sections
                 # Using a larger overlap creates smoother transitions
-                # We'll use a consistent approach with the latent blending
-                # but with a larger overlap for smoother pixel-space transitions
-                overlapped_frames = min(latent_window_size * 2, section_latent_frames)
-                print(f"Pixel-space overlap frames: {overlapped_frames}")
+                # We'll use a much larger overlap for pixel-space transitions
+                # to ensure very smooth blending between sections
+                overlapped_frames = min(latent_window_size * 4, section_latent_frames)
+                print(f"Pixel-space overlap frames: {overlapped_frames} (using larger overlap for smoother transitions)")
 
                 # Decode the current section frames
                 # Keep on GPU if possible for faster processing
@@ -567,10 +585,40 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 print(f"Current pixels shape: {current_pixels.shape}, device: {current_pixels.device}")
                 print(f"History pixels shape: {history_pixels.shape}, device: {history_pixels.device}")
 
-                # Use soft_append_bcthw to blend the sections together
-                # This creates a smooth linear transition between sections
-                history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
-                print(f"Updated history_pixels shape after append: {history_pixels.shape}, device: {history_pixels.device}")
+                # Create a custom blending function for smoother transitions
+                # Instead of using the default linear blending in soft_append_bcthw,
+                # we'll create our own sigmoid-based blending for more natural transitions
+
+                # First, extract the overlapping regions
+                current_overlap = current_pixels[:, :, :overlapped_frames]
+                history_overlap = history_pixels[:, :, -overlapped_frames:]
+
+                # Create sigmoid weights for smoother blending
+                device = current_overlap.device
+                dtype = current_overlap.dtype
+                t = torch.linspace(0, 1, overlapped_frames, dtype=dtype, device=device)
+
+                # Apply sigmoid function for smoother transition
+                k = 6.0  # Controls the steepness of the sigmoid
+                weights = 1.0 / (1.0 + torch.exp(-k * (t - 0.5)))
+
+                # Reshape for broadcasting
+                weights = weights.view(1, 1, -1, 1, 1)
+
+                print(f"Using custom sigmoid blending for pixel space with k={k}")
+
+                # Blend the overlapping regions
+                blended_overlap = weights * current_overlap + (1 - weights) * history_overlap
+
+                # Concatenate the non-overlapping parts with the blended overlap
+                result = torch.cat([
+                    current_pixels[:, :, overlapped_frames:],  # Non-overlapping part of current
+                    blended_overlap,                          # Blended overlap region
+                    history_pixels[:, :, :-overlapped_frames]  # Non-overlapping part of history
+                ], dim=2)
+
+                history_pixels = result
+                print(f"Updated history_pixels shape after custom blending: {history_pixels.shape}, device: {history_pixels.device}")
 
                 # Move to CPU only at the very end before saving to disk
                 if history_pixels.device.type != 'cpu' and not high_vram:
