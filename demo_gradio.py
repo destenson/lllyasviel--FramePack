@@ -194,12 +194,14 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
 
         for latent_padding in latent_paddings:
-            is_last_section = latent_padding == 0
-            latent_padding_size = latent_padding * latent_window_size
-
+            # Check for end signal at the beginning of each loop iteration
             if stream.input_queue.top() == 'end':
+                print("Ending generation early due to user request")
                 stream.output_queue.push(('end', None))
                 return
+
+            is_last_section = latent_padding == 0
+            latent_padding_size = latent_padding * latent_window_size
 
             print(f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}')
 
@@ -270,6 +272,12 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 clean_latent_4x_indices=clean_latent_4x_indices,
                 callback=callback,
             )
+
+            # Additional check after generating latents
+            if stream.input_queue.top() == 'end':
+                print("Ending generation early after latent generation")
+                stream.output_queue.push(('end', None))
+                return
 
             if is_last_section:
                 generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
@@ -347,6 +355,7 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
 def end_process():
     stream.input_queue.push('end')
+    return None, gr.update(visible=False), "", "", gr.update(interactive=True), gr.update(interactive=False)
 
 
 quick_prompts = [
@@ -402,8 +411,7 @@ with block:
 
     ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
-    end_button.click(fn=end_process)
-
+    end_button.click(fn=end_process, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
 
 block.launch(
     server_name=args.server,
