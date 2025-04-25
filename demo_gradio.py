@@ -387,6 +387,9 @@ with block:
                 seed = gr.Number(label="Seed", value=31337, precision=0)
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=3, step=0.1)
+
+                fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=15, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
+
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)  # Should not change
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=16, step=1, info='Changing this value is not recommended.')
 
@@ -400,8 +403,6 @@ with block:
 
                 mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
                 
-                fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=15, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
-
         with gr.Column():
             preview_image = gr.Image(label="Next Latents", height=200, visible=False)
             result_video = gr.Video(label="Finished Frames", autoplay=True, show_share_button=False, height=512, loop=True)
