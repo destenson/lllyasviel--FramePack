@@ -393,14 +393,14 @@ with block:
                 
                 generation_fps = gr.Slider(label="Generation FPS", minimum=15, maximum=60, value=30, step=1, info="Internal framerate used for generation. This affects how many frames are created. Keep at 30 for normal motion speed.")
 
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)
+                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True, info="Lower values may produce more varied motion but can reduce coherence.")
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=16, step=1, info="Changing this value is not recommended. (was 25)")
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
-                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Changing this value is not recommended. (was 10)')
+                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Try reducing this to 6-8 for more variation and less adherence to the prompt. Higher values = stricter prompt following.')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
                 
-                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=15.0, value=2.5, step=0.1, info='Higher values = more motion between frames. Start with 2.5, try 3.0-4.0 for more dynamic motion.')
+                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=10.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
