@@ -194,11 +194,11 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
 
         for latent_padding in latent_paddings:
-            # Check for end signal at the beginning of each loop iteration
-            if stream.input_queue.top() == 'end':
-                print("Ending generation early due to user request")
-                stream.output_queue.push(('end', None))
-                return
+            # # Check for end signal at the beginning of each loop iteration
+            # if stream.input_queue.top() == 'end':
+            #     print("Ending generation early due to user request")
+            #     stream.output_queue.push(('end', None))
+            #     return
 
             is_last_section = latent_padding == 0
             latent_padding_size = latent_padding * latent_window_size
