@@ -159,44 +159,37 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
         additional_latents = []
         if use_additional_frames and additional_frames_list and len(additional_frames_list) > 0:
             stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Processing additional frames ...'))))
-            
-            for i, frame_data in enumerate(additional_frames_list):
+
+            print(f"Worker received additional frames: {len(additional_frames_list)}")
+
+            for i, frame_np in enumerate(additional_frames_list):
                 try:
-                    # Gallery component returns a tuple (image_path, image_object)
-                    # or the frame might be directly provided as an image
-                    if isinstance(frame_data, tuple) and len(frame_data) == 2:
-                        # Extract the actual image from the tuple
-                        frame = frame_data[1]  # Second element should be the image
-                    else:
-                        frame = frame_data
-                    
-                    # Convert PIL image to numpy array if needed
-                    if isinstance(frame, Image.Image):
-                        frame_np = np.array(frame)
-                    else:
-                        frame_np = frame
-                    
-                    # Now process the frame if it's valid
-                    if frame_np is not None and len(frame_np.shape) == 3 and frame_np.shape[2] == 3:
+                    print(f"Processing frame {i}, shape: {frame_np.shape if hasattr(frame_np, 'shape') else 'unknown'}")
+
+                    # Validate the frame format
+                    if frame_np is not None and isinstance(frame_np, np.ndarray) and len(frame_np.shape) == 3 and frame_np.shape[2] == 3:
                         # Resize to match the same dimensions as the main image
                         frame_resized = resize_and_center_crop(frame_np, target_width=width, target_height=height)
-                        
+                        print(f"Frame {i} resized to {frame_resized.shape}")
+
                         # Convert to tensor
                         frame_pt = torch.from_numpy(frame_resized).float() / 127.5 - 1
                         frame_pt = frame_pt.permute(2, 0, 1)[None, :, None]
-                        
+
                         # Encode with VAE to get latent
                         frame_latent = vae_encode(frame_pt, vae)
                         additional_latents.append(frame_latent)
-                        
+
                         # Save processed frame for debugging
                         Image.fromarray(frame_resized).save(os.path.join(outputs_folder, f'{job_id}_frame_{i}.png'))
+                        print(f"Frame {i} successfully processed and saved")
                     else:
-                        print(f"Skipping frame {i}: invalid format")
+                        print(f"Skipping frame {i}: invalid format or shape: {frame_np.shape if hasattr(frame_np, 'shape') else 'unknown'}")
                 except Exception as e:
                     print(f"Error processing frame {i}: {str(e)}")
-            
-            print(f"Processed {len(additional_latents)} additional frames")
+                    traceback.print_exc()  # Print full traceback for debugging
+
+            print(f"Successfully processed {len(additional_latents)} additional frames for latent guidance")
 
         # CLIP Vision
 
@@ -261,7 +254,7 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 # For each iteration, update clean_latents_4x with any available additional latents
                 # This ensures the model has guidance from the additional frames
                 max_additional = min(16, len(additional_latents))  # Maximum 16 latents can be used as 4x guides
-                
+
                 for i in range(max_additional):
                     # Replace the 4x guide latents with our additional frames
                     # Make sure we're only replacing up to the available positions in clean_latents_4x
@@ -385,11 +378,60 @@ def process(input_image, additional_frames_list, use_additional_frames, prompt, 
     global stream
     assert input_image is not None, 'No input image!'
 
+    # According to Gradio docs, Gallery as input returns a list of (media, caption) tuples
+    # or a list of media if no captions are provided
+    print(f"Additional frames received type: {type(additional_frames_list)}")
+
+    # Extract frames from gallery format
+    processed_frames = []
+    if additional_frames_list and len(additional_frames_list) > 0:
+        print(f"Additional frames list length: {len(additional_frames_list)}")
+
+        for i, item in enumerate(additional_frames_list):
+            try:
+                # Check if it's a tuple (image, caption)
+                if isinstance(item, tuple) and len(item) == 2:
+                    frame_data = item[0]  # First element is the image
+                    print(f"Frame {i} is a tuple with caption: {item[1]}")
+                else:
+                    frame_data = item
+
+                # Process the frame based on its type
+                if isinstance(frame_data, Image.Image):
+                    print(f"Frame {i} is a PIL Image with size {frame_data.size}, mode {frame_data.mode}")
+                    # Convert to RGB if needed
+                    if frame_data.mode != 'RGB':
+                        frame_data = frame_data.convert('RGB')
+                    frame_np = np.array(frame_data)
+                    processed_frames.append(frame_np)
+                elif isinstance(frame_data, np.ndarray):
+                    print(f"Frame {i} is a numpy array with shape {frame_data.shape}")
+                    processed_frames.append(frame_data)
+                elif isinstance(frame_data, str):
+                    # It's a file path
+                    print(f"Frame {i} is a file path: {frame_data}")
+                    try:
+                        img = Image.open(frame_data)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        frame_np = np.array(img)
+                        processed_frames.append(frame_np)
+                    except Exception as e:
+                        print(f"Error loading image from path {frame_data}: {str(e)}")
+                else:
+                    print(f"Frame {i} has unknown type: {type(frame_data)}")
+            except Exception as e:
+                print(f"Error processing frame {i}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
+    print(f"Processed {len(processed_frames)} frames for worker function")
+
     yield None, None, '', '', gr.update(interactive=False), gr.update(interactive=True)
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, additional_frames_list, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost)
+    async_run(worker, input_image, processed_frames, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost)
 
     output_filename = None
 
@@ -429,15 +471,25 @@ with block:
     with gr.Row():
         with gr.Column():
             input_image = gr.Image(sources='upload', type="numpy", label="First Frame (Required)", height=320)
-            
+
             # Additional frames section with improved layout
             with gr.Group():
                 gr.Markdown("### Additional Frames (Optional)")
-                additional_frames = gr.Gallery(label="", elem_id="additional_frames", visible=True, columns=5, rows=1, height=150, object_fit="contain")
+                additional_frames = gr.Gallery(
+                    label="",
+                    elem_id="additional_frames",
+                    visible=True,
+                    columns=5,
+                    rows=1,
+                    height=150,
+                    object_fit="contain",
+                    type="numpy",  # Ensure consistent type handling
+                    file_types=["image"]  # Only allow image files
+                )
                 with gr.Row():
                     upload_button = gr.UploadButton("Upload More Frames", file_types=["image"], file_count="multiple")
                     clear_frames_button = gr.Button(value="Clear All Frames")
-            
+
             prompt = gr.Textbox(label="Prompt", value='')
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
             example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
@@ -456,7 +508,7 @@ with block:
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=3, step=0.25)
 
                 fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=30, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
-                
+
                 generation_fps = gr.Slider(label="Generation FPS", minimum=15, maximum=60, value=30, step=1, info="Internal framerate used for generation. This affects how many frames are created. Keep at 30 for normal motion speed.")
 
                 latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=6, step=1, visible=True, info="Lower values may produce more varied motion but can reduce coherence.")
@@ -465,15 +517,15 @@ with block:
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
                 gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Try reducing this to 6-8 for more variation and less adherence to the prompt. Higher values = stricter prompt following.')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
-                
+
                 motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=6.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
-                
+
                 consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=2.0, value=1.0, step=0.01, info='Higher values create more significant changes from the beginning of the sequence. Values of 3-5 give more consistent variation throughout the video.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
                 mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
-                
+
         with gr.Column():
             preview_image = gr.Image(label="Next Latents", height=200, visible=False)
             result_video = gr.Video(label="Finished Frames", autoplay=True, show_share_button=False, height=512, loop=True)
@@ -490,23 +542,32 @@ with block:
     def upload_additional_frames(files):
         """Process uploaded files and add them to the gallery."""
         images = []
-        
+
         if files:
             for file in files:
                 if file is not None:
                     try:
                         img = Image.open(file.name)
-                        images.append(img)
+                        # Convert to RGB to ensure consistent format
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        # Convert to numpy array since we set Gallery type="numpy"
+                        img_np = np.array(img)
+                        images.append(img_np)
+                        print(f"Uploaded frame: {img.size}, mode: {img.mode}, converted to numpy array with shape {img_np.shape}")
                     except Exception as e:
                         print(f"Error processing image {file.name}: {str(e)}")
-        
+                        traceback.print_exc()
+
+        print(f"Total uploaded frames: {len(images)}")
         return gr.Gallery.update(value=images, visible=True)
 
     def add_more_frames(current_gallery, new_files):
         """Add more frames to the existing gallery without replacing current ones."""
         # Get current images
         current_images = current_gallery or []
-        
+        print(f"Current gallery has {len(current_images)} images")
+
         # Process new images
         new_images = []
         if new_files:
@@ -514,13 +575,21 @@ with block:
                 if file is not None:
                     try:
                         img = Image.open(file.name)
-                        new_images.append(img)
+                        # Convert to RGB to ensure consistent format
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        # Convert to numpy array since we set Gallery type="numpy"
+                        img_np = np.array(img)
+                        new_images.append(img_np)
+                        print(f"Added new frame: {img.size}, mode: {img.mode}, converted to numpy array with shape {img_np.shape}")
                     except Exception as e:
                         print(f"Error processing image {file.name}: {str(e)}")
-        
+                        traceback.print_exc()
+
         # Combine images
         all_images = current_images + new_images
-        
+        print(f"Total frames in gallery: {len(all_images)}")
+
         return gr.Gallery.update(value=all_images, visible=True)
 
     def clear_additional_frames():
