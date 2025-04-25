@@ -457,8 +457,35 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
             print(f"Generated latents shape: {generated_latents.shape}")
             print(f"Current history latents shape: {history_latents.shape}")
 
+            # For better continuity between sections, we need to ensure smooth transitions
+            # in the latent space as well, not just in pixel space
+
             # Add the new frames to the total count
-            total_generated_latent_frames += int(generated_latents.shape[2])
+            new_frames = int(generated_latents.shape[2])
+            total_generated_latent_frames += new_frames
+
+            # If this is not the first section, we need to blend the latents for smoother transitions
+            if section_index > 0:
+                # Create a smooth transition between the new latents and the existing history
+                # This helps reduce the "stochastic fading" effect between sections
+                overlap_latent_frames = min(4, new_frames)  # Use a small overlap for latent blending
+
+                if overlap_latent_frames > 0:
+                    print(f"Blending {overlap_latent_frames} latent frames for smooth transition")
+
+                    # Get the overlapping frames from both tensors
+                    new_overlap = generated_latents[:, :, -overlap_latent_frames:].clone()
+                    old_overlap = history_latents[:, :, :overlap_latent_frames].clone()
+
+                    # Create blending weights
+                    weights = torch.linspace(0, 1, overlap_latent_frames, dtype=history_latents.dtype, device=history_latents.device)
+                    weights = weights.view(1, 1, -1, 1, 1)
+
+                    # Blend the overlapping frames
+                    blended_overlap = weights * new_overlap + (1 - weights) * old_overlap
+
+                    # Replace the first few frames of history_latents with the blended frames
+                    history_latents[:, :, :overlap_latent_frames] = blended_overlap
 
             # Concatenate the new latents with the history
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
@@ -472,13 +499,29 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
             real_history_latents = history_latents[:, :, :total_generated_latent_frames, :, :]
 
             if history_pixels is None:
+                # First section - just decode all frames
                 history_pixels = vae_decode(real_history_latents, vae).cpu()
+                print(f"Initial history_pixels shape: {history_pixels.shape}")
             else:
+                # For subsequent sections, we need to handle the overlap carefully
+                # Calculate how many frames to decode from the current section
                 section_latent_frames = (latent_window_size * 2 + 1) if is_last_section else (latent_window_size * 2)
-                overlapped_frames = latent_window_size * 4 - 3
+                print(f"Section latent frames: {section_latent_frames}")
 
+                # Calculate the overlap between sections
+                # This is the number of frames that will be blended between sections
+                # Using a larger overlap creates smoother transitions
+                overlapped_frames = min(latent_window_size * 4 - 3, section_latent_frames)
+                print(f"Overlap frames: {overlapped_frames}")
+
+                # Decode the current section frames
                 current_pixels = vae_decode(real_history_latents[:, :, :section_latent_frames], vae).cpu()
+                print(f"Current pixels shape: {current_pixels.shape}")
+
+                # Use soft_append_bcthw to blend the sections together
+                # This creates a smooth linear transition between sections
                 history_pixels = soft_append_bcthw(current_pixels, history_pixels, overlapped_frames)
+                print(f"Updated history_pixels shape after append: {history_pixels.shape}")
 
             if not high_vram:
                 unload_complete_models()
