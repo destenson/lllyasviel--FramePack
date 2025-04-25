@@ -7,11 +7,17 @@ from diffusers_helper.utils import repeat_to_batch_size
 
 
 def flux_time_shift(t, mu=1.15, sigma=1.0):
-    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma) if t > 0 else 0.0
 
 
 def flux_time_shift_enhanced(t, mu=1.15, sigma=1.0, boost_factor=1.0):
     """Enhanced version of flux_time_shift that allows boosting the variation throughout the schedule"""
+    # Handle edge cases to prevent division by zero
+    if t <= 0:
+        return 0.0
+    if t >= 1:
+        return 1.0
+        
     shifted = math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
     # Apply a boost that affects early steps more than later steps
     # This makes changes more significant from the beginning
