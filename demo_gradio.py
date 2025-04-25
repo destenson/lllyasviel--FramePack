@@ -100,8 +100,8 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps):
-    total_latent_sections = (total_second_length * fps) / (latent_window_size * 4)
+def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps):
+    total_latent_sections = (total_second_length * generation_fps) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
 
     job_id = generate_timestamp()
@@ -325,7 +325,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     return
 
 
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps):
+def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -333,7 +333,7 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps)
+    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps)
 
     output_filename = None
 
@@ -389,12 +389,14 @@ with block:
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=3, step=0.1)
 
                 fps = gr.Slider(label="Output FPS", minimum=5, maximum=60, value=15, step=1, info="Frames per second in the output video. Higher values create smoother video without changing playback speed.")
+                
+                generation_fps = gr.Slider(label="Generation FPS", minimum=15, maximum=60, value=30, step=1, info="Internal framerate used for generation. This affects how many frames are created. Keep at 30 for normal motion speed.")
 
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)  # Should not change
-                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=16, step=1, info='Changing this value is not recommended.')
+                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)
+                steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=16, step=1, info="Changing this value is not recommended. (was 25)")
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
-                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Changing this value is not recommended.')
+                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Changing this value is not recommended. (was 10)')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
                 
                 motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=5.0, value=2.5, step=0.1, info='Higher values = more motion between frames. Start with 2.5, try 3.0-4.0 for more dynamic motion.')
@@ -412,7 +414,7 @@ with block:
 
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
-    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps]
+    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
 
