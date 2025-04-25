@@ -7,7 +7,7 @@ from diffusers_helper.utils import repeat_to_batch_size
 
 
 def flux_time_shift(t, mu=1.15, sigma=1.0):
-    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma) if t > 0 else 0.0
+    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
 
 def flux_time_shift_enhanced(t, mu=1.15, sigma=1.0, boost_factor=1.0):
