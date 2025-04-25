@@ -101,8 +101,14 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 @torch.no_grad()
 def worker(input_image, additional_frames_list, use_additional_frames, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf, fps, generation_fps, consistency_boost):
+    # Calculate the total number of latent sections needed
     total_latent_sections = (total_second_length * generation_fps) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
+
+    print(f"Requested video length: {total_second_length} seconds")
+    print(f"Generation FPS: {generation_fps}")
+    print(f"Latent window size: {latent_window_size}")
+    print(f"Calculated total latent sections: {total_latent_sections}")
 
     job_id = generate_timestamp()
 
@@ -137,7 +143,7 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
 
         stream.output_queue.push(('progress', (None, '', make_progress_bar_html(0, 'Image processing ...'))))
 
-        H, W, C = input_image.shape
+        H, W, _ = input_image.shape  # _ for unused channel dimension
         height, width = find_nearest_bucket(H, W, resolution=640)
         input_image_np = resize_and_center_crop(input_image, target_width=width, target_height=height)
 
@@ -178,6 +184,16 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
 
                         # Encode with VAE to get latent
                         frame_latent = vae_encode(frame_pt, vae)
+                        # Print shape for debugging
+                        print(f"Frame {i} latent shape: {frame_latent.shape}")
+
+                        # Ensure consistent tensor format for all latents
+                        # We want [1, 16, 88, 68] format for all latents
+                        if frame_latent.dim() == 5 and frame_latent.shape[2] == 1:
+                            # If we have [1, 16, 1, 88, 68], squeeze out the middle dimension
+                            frame_latent = frame_latent.squeeze(2)
+                            print(f"Squeezed frame {i} latent to shape: {frame_latent.shape}")
+
                         additional_latents.append(frame_latent)
 
                         # Save processed frame for debugging
@@ -220,14 +236,22 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
         history_pixels = None
         total_generated_latent_frames = 0
 
-        latent_paddings = reversed(range(total_latent_sections))
-
-        if total_latent_sections > 4:
-            # In theory the latent_paddings should follow the above sequence, but it seems that duplicating some
-            # items looks better than expanding it when total_latent_sections > 4
-            # One can try to remove below trick and just
-            # use `latent_paddings = list(reversed(range(total_latent_sections)))` to compare
+        # Create the latent paddings sequence
+        # This determines the order and number of sections to generate
+        if total_latent_sections <= 1:
+            # For very short videos, just generate one section
+            latent_paddings = [0]
+        elif total_latent_sections <= 4:
+            # For short videos, use the standard reversed range
+            latent_paddings = list(reversed(range(total_latent_sections)))
+        else:
+            # For longer videos, use the special pattern that works better
+            # [3, 2, 2, ..., 2, 1, 0] where the number of 2's depends on total_latent_sections
             latent_paddings = [3] + [2] * (total_latent_sections - 3) + [1, 0]
+
+        # Convert to list to ensure we can index into it later
+        latent_paddings = list(latent_paddings)
+        print(f"Latent paddings sequence: {latent_paddings}")
 
         for latent_padding in latent_paddings:
             # # Check for end signal at the beginning of each loop iteration
@@ -239,10 +263,17 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
             is_last_section = latent_padding == 0
             latent_padding_size = latent_padding * latent_window_size
 
-            print(f'latent_padding_size = {latent_padding_size}, is_last_section = {is_last_section}')
+            # Print detailed information about the current section
+            section_index = latent_paddings.index(latent_padding)
+            print(f"Processing section {section_index+1}/{len(latent_paddings)}")
+            print(f"Latent padding: {latent_padding}")
+            print(f"Latent padding size: {latent_padding_size}")
+            print(f"Is last section: {is_last_section}")
 
             indices = torch.arange(0, sum([1, latent_padding_size, latent_window_size, 1, 2, 16])).unsqueeze(0)
-            clean_latent_indices_pre, blank_indices, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split([1, latent_padding_size, latent_window_size, 1, 2, 16], dim=1)
+            # Split indices for different parts of the latent space
+            # Use _ for the blank_indices since it's not directly used in this code
+            clean_latent_indices_pre, _, latent_indices, clean_latent_indices_post, clean_latent_2x_indices, clean_latent_4x_indices = indices.split([1, latent_padding_size, latent_window_size, 1, 2, 16], dim=1)
             clean_latent_indices = torch.cat([clean_latent_indices_pre, clean_latent_indices_post], dim=1)
 
             clean_latents_pre = start_latent.to(history_latents)
@@ -255,11 +286,77 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 # This ensures the model has guidance from the additional frames
                 max_additional = min(16, len(additional_latents))  # Maximum 16 latents can be used as 4x guides
 
+                print(f"clean_latents_4x shape: {clean_latents_4x.shape}")
+
                 for i in range(max_additional):
-                    # Replace the 4x guide latents with our additional frames
-                    # Make sure we're only replacing up to the available positions in clean_latents_4x
-                    idx = min(i, clean_latents_4x.shape[2] - 1)
-                    clean_latents_4x[:, :, idx, :, :] = additional_latents[i].to(clean_latents_4x.device)
+                    try:
+                        # Replace the 4x guide latents with our additional frames
+                        # Make sure we're only replacing up to the available positions in clean_latents_4x
+                        idx = min(i, clean_latents_4x.shape[2] - 1)
+
+                        # Get the additional latent and print its shape
+                        additional_latent = additional_latents[i]
+                        print(f"Additional latent {i} shape: {additional_latent.shape}")
+
+                        # Print the original shape for debugging
+                        print(f"Original additional latent {i} shape: {additional_latent.shape}")
+
+                        # We need to ensure the tensor is in the format expected by clean_latents_4x
+                        # clean_latents_4x has shape [1, 16, 16, 88, 68]
+                        # We need to prepare a tensor that can be assigned to a slice [:, :, idx, :, :]
+
+                        # First, ensure we have a 4D tensor with shape [1, 16, 88, 68]
+                        if additional_latent.dim() == 5:
+                            # If it's [1, 16, 1, 88, 68], squeeze out the middle dimension
+                            if additional_latent.shape[2] == 1:
+                                additional_latent = additional_latent.squeeze(2)
+                                print(f"After squeeze, shape: {additional_latent.shape}")
+
+                        # Now we should have a 4D tensor [1, 16, 88, 68]
+                        # No need to permute as it's already in the correct format
+
+                        print(f"After processing, additional latent {i} shape: {additional_latent.shape}")
+
+                        # Move to the correct device
+                        additional_latent = additional_latent.to(clean_latents_4x.device)
+
+                        # Assign to the clean_latents_4x tensor
+                        try:
+                            # We need to make sure the shapes match for assignment
+                            # clean_latents_4x has shape [1, 16, 16, 88, 68]
+                            # We want to assign to a specific frame index
+
+                            # For a 4D tensor [1, 16, 88, 68], we need to assign it to a slice of clean_latents_4x
+                            print(f"Assigning latent to clean_latents_4x[:, :, {idx}, :, :]")
+
+                            # Direct assignment to the specific frame index
+                            clean_latents_4x[0, :, idx, :, :] = additional_latent[0, :, :, :]
+
+                            print(f"Successfully assigned additional latent {i} to clean_latents_4x")
+                        except Exception as e:
+                            print(f"Error during assignment: {str(e)}")
+                            traceback.print_exc()
+
+                            # Try an alternative approach if the direct assignment fails
+                            try:
+                                print("Trying alternative assignment method...")
+                                # Create a view of the target slice
+                                target_slice = clean_latents_4x[0, :, idx, :, :]
+                                print(f"Target slice shape: {target_slice.shape}")
+
+                                # Create a view of the source data
+                                source_data = additional_latent[0, :, :, :]
+                                print(f"Source data shape: {source_data.shape}")
+
+                                # Use copy_ to assign values
+                                target_slice.copy_(source_data)
+                                print(f"Successfully assigned using copy_ method")
+                            except Exception as e2:
+                                print(f"Alternative assignment also failed: {str(e2)}")
+                                traceback.print_exc()
+                    except Exception as e:
+                        print(f"Error assigning additional latent {i}: {str(e)}")
+                        traceback.print_exc()
 
             if not high_vram:
                 unload_complete_models()
@@ -290,6 +387,31 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
                 return
 
+            # Calculate adjusted motion bias for each section to maintain consistent motion
+            # The issue is that later sections have less motion, so we'll increase the motion bias
+            # for later sections to compensate
+            section_index = list(latent_paddings).index(latent_padding) if latent_padding in latent_paddings else 0
+            total_sections = len(list(latent_paddings))
+
+            # Apply a progressive increase to motion bias for later sections
+            # First section uses the original motion_bias, later sections get progressively higher values
+            adjusted_motion_bias = motion_bias
+            adjusted_consistency_boost = consistency_boost
+
+            if total_sections > 1 and section_index > 0:
+                # Scale factor increases for each subsequent section
+                # This helps maintain consistent motion throughout the video
+                motion_scale_factor = 1.0 + (section_index / (total_sections - 1)) * 0.5  # Adjust the 0.5 multiplier as needed
+                adjusted_motion_bias = motion_bias * motion_scale_factor
+
+                # Also adjust consistency boost to be higher for later sections
+                # This helps maintain temporal coherence across sections
+                consistency_scale_factor = 1.0 + (section_index / (total_sections - 1)) * 0.3  # Adjust the 0.3 multiplier as needed
+                adjusted_consistency_boost = min(consistency_boost * consistency_scale_factor, 5.0)  # Cap at 5.0
+
+                print(f"Section {section_index+1}/{total_sections}: Adjusted motion bias from {motion_bias:.2f} to {adjusted_motion_bias:.2f}")
+                print(f"Section {section_index+1}/{total_sections}: Adjusted consistency boost from {consistency_boost:.2f} to {adjusted_consistency_boost:.2f}")
+
             generated_latents = sample_hunyuan(
                 transformer=transformer,
                 sampler='unipc',
@@ -299,7 +421,7 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 real_guidance_scale=cfg,
                 distilled_guidance_scale=gs,
                 guidance_rescale=rs,
-                shift=motion_bias,
+                shift=adjusted_motion_bias,  # Use the adjusted motion bias
                 num_inference_steps=steps,
                 generator=rnd,
                 prompt_embeds=llama_vec,
@@ -318,7 +440,7 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
                 clean_latent_2x_indices=clean_latent_2x_indices,
                 clean_latents_4x=clean_latents_4x,
                 clean_latent_4x_indices=clean_latent_4x_indices,
-                consistency_boost=consistency_boost,
+                consistency_boost=adjusted_consistency_boost,  # Use the adjusted consistency boost
                 callback=callback,
             )
 
@@ -331,8 +453,17 @@ def worker(input_image, additional_frames_list, use_additional_frames, prompt, n
             if is_last_section:
                 generated_latents = torch.cat([start_latent.to(generated_latents), generated_latents], dim=2)
 
+            # Update the history latents with the newly generated latents
+            print(f"Generated latents shape: {generated_latents.shape}")
+            print(f"Current history latents shape: {history_latents.shape}")
+
+            # Add the new frames to the total count
             total_generated_latent_frames += int(generated_latents.shape[2])
+
+            # Concatenate the new latents with the history
             history_latents = torch.cat([generated_latents.to(history_latents), history_latents], dim=2)
+            print(f"Updated history latents shape: {history_latents.shape}")
+            print(f"Total generated latent frames: {total_generated_latent_frames}")
 
             if not high_vram:
                 offload_model_from_device_for_memory_preservation(transformer, target_device=gpu, preserved_memory_gb=8)
@@ -490,13 +621,14 @@ with block:
                     upload_button = gr.UploadButton("Upload More Frames", file_types=["image"], file_count="multiple")
                     clear_frames_button = gr.Button(value="Clear All Frames")
 
-            prompt = gr.Textbox(label="Prompt", value='')
-            example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
-            example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
-
             with gr.Row():
                 start_button = gr.Button(value="Start Generation")
                 end_button = gr.Button(value="End Generation", interactive=False)
+
+            prompt = gr.Textbox(label="Prompt", value='')
+
+            example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
+            example_quick_prompts.click(lambda x: x[0], inputs=[example_quick_prompts], outputs=prompt, show_progress=False, queue=False)
 
             with gr.Group():
                 use_additional_frames = gr.Checkbox(label='Use Additional Frames as Latent Guides', value=True, info='When enabled, additional frames are used to guide latent generation.')
@@ -520,7 +652,7 @@ with block:
 
                 motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=25.0, value=6.0, step=0.1, info='Controls diversity between frames. Values over 10 can produce extreme variation but may cause artifacts. Use with higher Generation FPS for best results.')
 
-                consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=2.0, value=1.0, step=0.01, info='Higher values create more significant changes from the beginning of the sequence. Values of 3-5 give more consistent variation throughout the video.')
+                consistency_boost = gr.Slider(label="Consistency Boost", minimum=1.0, maximum=5.0, value=1.5, step=0.01, info='Higher values (1.5-3.0) create more consistent motion throughout the video. Values above 3.0 may cause artifacts but ensure very consistent motion.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
