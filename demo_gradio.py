@@ -359,6 +359,7 @@ def end_process():
 
 
 quick_prompts = [
+    'dancing fast, fast motion, rhythic motion',
     'The girl dances gracefully, with clear movements, full of charm.',
     'A character doing some simple body movements.',
 ]
@@ -399,7 +400,7 @@ with block:
                 gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=12.0, step=0.01, info='Changing this value is not recommended. (was 10)')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
                 
-                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=5.0, value=2.5, step=0.1, info='Higher values = more motion between frames. Start with 2.5, try 3.0-4.0 for more dynamic motion.')
+                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=15.0, value=2.5, step=0.1, info='Higher values = more motion between frames. Start with 2.5, try 3.0-4.0 for more dynamic motion.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=1, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 

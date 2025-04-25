@@ -263,8 +263,8 @@ def soft_append_bcthw(history, current, overlap=0):
     return output.to(history)
 
 
-def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
-    b, c, t, h, w = x.shape
+def save_bcthw_as_mp4(frames, output_path, fps=30, crf=16, keep_proportion=False, lossless=False, verbose=True):
+    b, c, t, h, w = frames.shape
 
     per_row = b
     for p in [6, 5, 4, 3, 2]:
@@ -272,12 +272,31 @@ def save_bcthw_as_mp4(x, output_filename, fps=10, crf=0):
             per_row = p
             break
 
-    os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_filename))), exist_ok=True)
-    x = torch.clamp(x.float(), -1., 1.) * 127.5 + 127.5
-    x = x.detach().cpu().to(torch.uint8)
-    x = einops.rearrange(x, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
-    torchvision.io.write_video(output_filename, x, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
-    return x
+    os.makedirs(os.path.dirname(os.path.abspath(os.path.realpath(output_path))), exist_ok=True)
+    frames = torch.clamp(frames.float(), -1., 1.) * 127.5 + 127.5
+    frames = frames.detach().cpu().to(torch.uint8)
+    frames = einops.rearrange(frames, '(m n) c t h w -> t (m h) (n w) c', n=per_row)
+
+    # Add frame dropping logic for lower output fps
+    if fps < 30:
+        # Calculate the stride to sample frames to achieve target fps
+        stride = 30 / fps
+        
+        # Get frame indices to keep (first dimension is time in this tensor)
+        keep_indices = [int(i * stride) for i in range(int(frames.shape[0] / stride))]
+        
+        if verbose and len(keep_indices) < frames.shape[0]:
+            print(f'Reduced {frames.shape[0]} frames to {len(keep_indices)} frames for output at {fps} FPS')
+        
+        # Sample only the frames we want to keep (first dimension is time)
+        frames = frames[keep_indices]
+    
+    if verbose:
+        print(f'Saving video with fps={fps}, shape={frames.shape} to {output_path}')
+
+    frames_np = frames.numpy()
+    torchvision.io.write_video(output_path, frames_np, fps=fps, video_codec='libx264', options={'crf': str(int(crf))})
+    return frames
 
 
 def save_bcthw_as_png(x, output_filename):
