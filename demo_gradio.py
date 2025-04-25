@@ -100,7 +100,7 @@ os.makedirs(outputs_folder, exist_ok=True)
 
 
 @torch.no_grad()
-def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf):
+def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf):
     total_latent_sections = (total_second_length * 30) / (latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
 
@@ -234,7 +234,9 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 current_step = d['i'] + 1
                 percentage = int(100.0 * current_step / steps)
                 hint = f'Sampling {current_step}/{steps}'
-                desc = f'Total generated frames: {int(max(0, total_generated_latent_frames * 4 - 3))}, Video length: {max(0, (total_generated_latent_frames * 4 - 3) / 30) :.2f} seconds (FPS-30). The video is being extended now ...'
+                actual_frames = int(max(0, total_generated_latent_frames * 4 - 3))
+                video_seconds = max(0, actual_frames / 30)
+                desc = f'Total generated frames: {actual_frames}, Video length: {video_seconds:.2f} seconds (FPS-30). The video is being extended now ...'
                 stream.output_queue.push(('progress', (preview, desc, make_progress_bar_html(percentage, hint))))
                 return
 
@@ -247,7 +249,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 real_guidance_scale=cfg,
                 distilled_guidance_scale=gs,
                 guidance_rescale=rs,
-                # shift=3.0,
+                shift=motion_bias,
                 num_inference_steps=steps,
                 generator=rnd,
                 prompt_embeds=llama_vec,
@@ -315,7 +317,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
     return
 
 
-def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf):
+def process(input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf):
     global stream
     assert input_image is not None, 'No input image!'
 
@@ -323,7 +325,7 @@ def process(input_image, prompt, n_prompt, seed, total_second_length, latent_win
 
     stream = AsyncStream()
 
-    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf)
+    async_run(worker, input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf)
 
     output_filename = None
 
@@ -376,14 +378,16 @@ with block:
                 seed = gr.Number(label="Seed", value=31337, precision=0)
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=120, value=5, step=0.1)
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=9, step=1, visible=False)  # Should not change
+                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)  # Should not change
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1, info='Changing this value is not recommended.')
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
                 gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended.')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
+                
+                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=5.0, value=2.5, step=0.1, info='Higher values = more motion between frames. Start with 2.5, try 3.0-4.0 for more dynamic motion.')
 
-                gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=6, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
+                gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
                 mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
 
@@ -396,7 +400,7 @@ with block:
 
     gr.HTML('<div style="text-align:center; margin-top:20px;">Share your results and find ideas at the <a href="https://x.com/search?q=framepack&f=live" target="_blank">FramePack Twitter (X) thread</a></div>')
 
-    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, gpu_memory_preservation, use_teacache, mp4_crf]
+    ips = [input_image, prompt, n_prompt, seed, total_second_length, latent_window_size, steps, cfg, gs, rs, motion_bias, gpu_memory_preservation, use_teacache, mp4_crf]
     start_button.click(fn=process, inputs=ips, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
     end_button.click(fn=end_process)
 
