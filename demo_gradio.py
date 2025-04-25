@@ -429,8 +429,14 @@ with block:
     with gr.Row():
         with gr.Column():
             input_image = gr.Image(sources='upload', type="numpy", label="First Frame (Required)", height=320)
-            additional_frames = gr.Gallery(label="Additional Frames (Optional)", elem_id="additional_frames", visible=True, columns=4, rows=1, height=150)
-            upload_button = gr.UploadButton("Upload Additional Frames", file_types=["image"], file_count="multiple")
+            
+            # Additional frames section with improved layout
+            with gr.Group():
+                gr.Markdown("### Additional Frames (Optional)")
+                additional_frames = gr.Gallery(label="", elem_id="additional_frames", visible=True, columns=5, rows=1, height=150, object_fit="contain")
+                with gr.Row():
+                    upload_button = gr.UploadButton("Upload More Frames", file_types=["image"], file_count="multiple")
+                    clear_frames_button = gr.Button(value="Clear All Frames")
             
             prompt = gr.Textbox(label="Prompt", value='')
             example_quick_prompts = gr.Dataset(samples=quick_prompts, label='Quick List', samples_per_page=1000, components=[prompt])
@@ -439,7 +445,6 @@ with block:
             with gr.Row():
                 start_button = gr.Button(value="Start Generation")
                 end_button = gr.Button(value="End Generation", interactive=False)
-                clear_frames_button = gr.Button(value="Clear Additional Frames")
 
             with gr.Group():
                 use_additional_frames = gr.Checkbox(label='Use Additional Frames as Latent Guides', value=True, info='When enabled, additional frames are used to guide latent generation.')
@@ -483,22 +488,47 @@ with block:
     end_button.click(fn=end_process, outputs=[result_video, preview_image, progress_desc, progress_bar, start_button, end_button])
 
     def upload_additional_frames(files):
-        image_paths = []
-        image_objects = []
+        """Process uploaded files and add them to the gallery."""
+        images = []
         
-        for file in files:
-            if file is not None:
-                img = Image.open(file.name)
-                image_objects.append(img)
-                image_paths.append(file.name)
+        if files:
+            for file in files:
+                if file is not None:
+                    try:
+                        img = Image.open(file.name)
+                        images.append(img)
+                    except Exception as e:
+                        print(f"Error processing image {file.name}: {str(e)}")
         
-        return image_objects
+        return gr.Gallery.update(value=images, visible=True)
+
+    def add_more_frames(current_gallery, new_files):
+        """Add more frames to the existing gallery without replacing current ones."""
+        # Get current images
+        current_images = current_gallery or []
+        
+        # Process new images
+        new_images = []
+        if new_files:
+            for file in new_files:
+                if file is not None:
+                    try:
+                        img = Image.open(file.name)
+                        new_images.append(img)
+                    except Exception as e:
+                        print(f"Error processing image {file.name}: {str(e)}")
+        
+        # Combine images
+        all_images = current_images + new_images
+        
+        return gr.Gallery.update(value=all_images, visible=True)
 
     def clear_additional_frames():
-        return None
-    
+        """Clear all frames from the gallery."""
+        return gr.Gallery.update(value=None, visible=True)
+
     # Connect the upload and clear buttons to their respective functions
-    upload_button.upload(fn=upload_additional_frames, inputs=[upload_button], outputs=[additional_frames])
+    upload_button.upload(fn=add_more_frames, inputs=[additional_frames, upload_button], outputs=[additional_frames])
     clear_frames_button.click(fn=clear_additional_frames, inputs=[], outputs=[additional_frames])
 
 
