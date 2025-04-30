@@ -198,11 +198,11 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
         total_sections = len(latent_paddings)
 
         for section_idx, latent_padding in enumerate(latent_paddings):
-            # # Check for end signal at the beginning of each loop iteration
-            # if stream.input_queue.top() == 'end':
-            #     print("Ending generation early due to user request")
-            #     stream.output_queue.push(('end', None))
-            #     return
+            # Check for end signal at the beginning of each loop iteration
+            if stream.input_queue.top() == 'end':
+                print("Ending generation early due to user request")
+                stream.output_queue.push(('end', None))
+                return
 
             is_last_section = latent_padding == 0
             latent_padding_size = latent_padding * latent_window_size
@@ -234,7 +234,7 @@ def worker(input_image, prompt, n_prompt, seed, total_second_length, latent_wind
                 preview = einops.rearrange(preview, 'b c t h w -> (b h) (t w) c')
 
                 if stream.input_queue.top() == 'end':
-                    stream.output_queue.push(('end', None))
+                    # stream.output_queue.push(('end', None))
                     raise KeyboardInterrupt('User ends the task.')
 
                 current_step = d['i'] + 1
