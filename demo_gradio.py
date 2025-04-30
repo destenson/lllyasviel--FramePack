@@ -401,24 +401,34 @@ with block:
             with gr.Group():
                 use_teacache = gr.Checkbox(label='Use TeaCache', value=True, info='Faster speed, but often makes hands and fingers slightly worse.')
 
-                n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=False)  # Not used
-                seed = gr.Number(label="Seed", value=31337, precision=0)
+                n_prompt = gr.Textbox(label="Negative Prompt", value="", visible=True)  # Not used
+                # checkbox to randomize the seed each time
+                seed = 31337
+                seed = gr.Number(label="Seed", value=seed, precision=0)
+                randomize_seed = gr.Checkbox(label="Randomize Seed", value=False, info="Check this to use a random seed for each generation.")
+                randomize_seed.change(
+                    lambda checked: np.random.randint(0, 2**32 - 1) if checked else seed,
+                    inputs=[randomize_seed],
+                    outputs=[seed],
+                    show_progress=False,
+                    queue=False
+                )
 
                 total_second_length = gr.Slider(label="Total Video Length (Seconds)", minimum=1, maximum=720, value=4, step=0.1)
-                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True)  # Should not change
+                latent_window_size = gr.Slider(label="Latent Window Size", minimum=1, maximum=33, value=5, step=1, visible=True, info='Number of latent frames per iteration')  # Should not change
                 steps = gr.Slider(label="Steps", minimum=1, maximum=100, value=25, step=1, info='Changing this value is not recommended.')
 
                 cfg = gr.Slider(label="CFG Scale", minimum=1.0, maximum=32.0, value=1.0, step=0.01, visible=False)  # Should not change
-                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended.')
+                gs = gr.Slider(label="Distilled CFG Scale", minimum=1.0, maximum=32.0, value=10.0, step=0.01, info='Changing this value is not recommended. (lower values try to match the prompt more closely, higher values are less bound by the prompt)')
                 rs = gr.Slider(label="CFG Re-Scale", minimum=0.0, maximum=1.0, value=0.0, step=0.01, visible=False)  # Should not change
 
-                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=5.0, value=2.5, step=0.1, info='Lower values = more motion between frames. Start with 2.5, try 1.0-2.0 for more dynamic motion.')
+                motion_bias = gr.Slider(label="Motion Bias", minimum=0.5, maximum=5.0, value=2.5, step=0.1, info='Lower values = more motion between frames. Start with 2.5, try 1.8-2.3 for more dynamic motion.')
 
-                motion_correction = gr.Slider(label="Motion Correction", minimum=0.0, maximum=1.0, value=0.5, step=0.05, info='Corrects the motion imbalance between start and end of video. Higher values make motion more consistent throughout the video.')
+                motion_correction = gr.Slider(label="Motion Correction", minimum=0.0, maximum=1.0, value=0.75, step=0.01, info='Tries to correct the motion imbalance between start and end of video. Higher values try to make motion more consistent throughout the video.')
 
                 gpu_memory_preservation = gr.Slider(label="GPU Inference Preserved Memory (GB) (larger means slower)", minimum=1, maximum=128, value=6, step=0.1, info="Set this number to a larger value if you encounter OOM. Larger value causes slower speed.")
 
-                mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=16, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
+                mp4_crf = gr.Slider(label="MP4 Compression", minimum=0, maximum=100, value=8, step=1, info="Lower means better quality. 0 is uncompressed. Change to 16 if you get black outputs. ")
 
         with gr.Column():
             preview_image = gr.Image(label="Next Latents", height=200, visible=False)
